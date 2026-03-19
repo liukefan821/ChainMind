@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.eggs/
+
+# Data (too large for git, reproducible via pipeline)
+scripts/data/
+data/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Conda
+*.conda

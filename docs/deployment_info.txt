@@ -1,0 +1,6 @@
+Contract Address: 0xD134842c3a255C7f70873EAD16A26BB4f728a423
+Network: Sepolia
+Deploy TX: 0x6f133ed9323d9fb0f684b054b0d8813f8a61ac49f5c533218968217711b3878d
+Deployed: 2026-03-20
+Compiler: Solidity 0.8.31
+Verified: Sourcify ✓ / Blockscout ✓ / Routescan ✓
