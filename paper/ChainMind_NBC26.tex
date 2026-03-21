@@ -1,0 +1,439 @@
+\documentclass[manuscript,nonacm]{acmart}
+
+%% Packages
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{url}
+\usepackage{hyperref}
+
+%% Code listing style
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  keywordstyle=\color{blue},
+  commentstyle=\color{gray},
+  stringstyle=\color{red!70!black},
+  language=Solidity,
+  morekeywords={pragma, solidity, contract, function, returns, mapping, struct, event, emit, modifier, require, external, view, public, uint256, bytes32, address, string, bool, memory, calldata, indexed},
+}
+
+\begin{document}
+
+%% Title
+\title{ChainMind: Blockchain-Based Accountability Framework for LLM-Powered DeFi Agents}
+
+%% Author
+\author{Kefan Liu}
+\affiliation{
+  \institution{Centre for Computational Technologies for Finance (CCTF)}
+  \institution{Nanyang Technological University}
+  \city{Singapore}
+}
+\email{LIUK0075@e.ntu.edu.sg}
+
+%% Abstract
+\begin{abstract}
+The rapid integration of Large Language Models (LLMs) into Decentralized Finance (DeFi) introduces autonomous agents that execute trading decisions, risk assessments, and portfolio management without human oversight. However, the opacity of LLM reasoning creates a critical accountability gap: when an agent recommends a leveraged position or approves a liquidity provision, there is no tamper-evident record of what inputs the model received, what outputs it produced, or which model version was responsible. This paper presents \textbf{ChainMind}, a blockchain-based accountability framework that records cryptographic commitments of LLM agent decisions on Ethereum smart contracts. ChainMind employs a four-layer architecture: (1) an Agent Layer where a local LLM generates DeFi risk assessments across 10 protocol scenarios, (2) a Commitment Layer that produces SHA-256 hashes of inputs, outputs, and model metadata, (3) a Blockchain Layer featuring the \texttt{AgentAccountability} smart contract supporting both individual and Merkle-tree-based batch submissions, and (4) a Verification Layer enabling $O(\log n)$ single-decision verification with on-chain Merkle proofs. Experimental evaluation on Ethereum Sepolia demonstrates that Merkle batch submission reduces on-chain costs by 88.9\% compared to individual commits while maintaining constant-cost submission regardless of batch size. The system achieves sub-millisecond verification times (546~$\mu$s for batches of 10,000 decisions) and 100\% tamper detection accuracy, where modification of a single byte in any decision record causes verification failure. The smart contract is deployed and verified on Sepolia, with all experimental results independently reproducible via the public codebase.
+\end{abstract}
+
+\keywords{Blockchain, LLM Agents, DeFi, Accountability, Merkle Tree, Smart Contract}
+
+\maketitle
+
+%% ============================================================
+\section{Introduction}
+\label{sec:intro}
+
+Large Language Models (LLMs) are rapidly transforming the landscape of Decentralized Finance. Autonomous agents powered by models such as GPT-4, LLaMA, and Qwen are being deployed to analyze market conditions, assess protocol risks, and execute trading strategies with minimal human intervention~\cite{autonomous_agents_blockchain}. These LLM-powered agents can process vast amounts of on-chain and off-chain data, reason about complex DeFi mechanics, and make real-time decisions across protocols ranging from lending platforms to perpetual exchanges.
+
+However, this autonomy introduces a fundamental accountability problem. When an LLM agent recommends a 5$\times$ leveraged long position on a perpetual exchange, or approves a liquidity provision into a volatile pool, the reasoning behind that decision is ephemeral. Unlike traditional financial systems where human traders maintain decision logs subject to regulatory audit, LLM agents operate as black boxes whose inputs, outputs, and model states vanish after each inference cycle. This opacity creates three critical challenges:
+
+\textbf{Challenge 1: Decision Non-Repudiation.} Neither the agent operator nor affected parties can prove what information the model received or what recommendation it produced at a specific point in time. An agent could claim it never recommended a particular trade, or an operator could retroactively modify decision logs to deflect liability.
+
+\textbf{Challenge 2: Model Version Accountability.} DeFi agents may use different model versions over time, each with distinct risk profiles and failure modes. Without immutable records linking decisions to specific model versions, it is impossible to determine whether a series of losses resulted from a known-faulty model version or a novel failure.
+
+\textbf{Challenge 3: Scalable Auditability.} Recording every agent decision individually on-chain is prohibitively expensive. A single Ethereum transaction storing three 32-byte hashes costs approximately 0.00022~ETH; an agent making 1,000 decisions per day would spend over 0.22~ETH daily on accountability alone. Any practical framework must provide cryptographic guarantees while remaining economically viable.
+
+To address these challenges, we present \textbf{ChainMind}, a blockchain-based accountability framework that creates tamper-evident, cryptographically verifiable records of LLM agent decisions. Our key insight is that Merkle trees enable batch commitment of arbitrarily many decisions into a single on-chain transaction, reducing costs by 88.9\% while preserving the ability to verify any individual decision with $O(\log n)$ proof complexity.
+
+The contributions of this paper are threefold:
+
+\begin{enumerate}
+    \item \textbf{A four-layer accountability architecture} that bridges LLM inference with on-chain commitment through SHA-256 hashing, Merkle tree construction, and smart contract storage, providing end-to-end decision traceability for DeFi agents.
+    
+    \item \textbf{A gas-efficient smart contract design} (\texttt{AgentAccountability.sol}) deployed on Ethereum Sepolia, supporting both individual decision commits and Merkle batch submissions with on-chain proof verification, achieving 88.9\% cost reduction compared to per-decision recording.
+    
+    \item \textbf{Comprehensive experimental evaluation} with real on-chain transactions demonstrating sub-millisecond verification ($\leq$546~$\mu$s for 10,000 decisions), 100\% tamper detection accuracy, and $O(\log n)$ proof scalability, with all results independently reproducible.
+\end{enumerate}
+
+The remainder of this paper is organized as follows. Section~\ref{sec:related} reviews related work. Section~\ref{sec:architecture} presents the system architecture. Section~\ref{sec:contract} details the smart contract design. Section~\ref{sec:evaluation} reports experimental results. Section~\ref{sec:discussion} discusses implications and limitations. Section~\ref{sec:conclusion} concludes.
+
+
+%% ============================================================
+\section{Related Work}
+\label{sec:related}
+
+\subsection{LLM Agents in Blockchain and DeFi}
+
+The intersection of LLMs and blockchain has attracted significant research attention. Wei et al.~\cite{llm_smartaudit} proposed LLM-SmartAudit, a multi-agent framework for smart contract vulnerability detection using a buffer-of-thought mechanism, achieving 98\% accuracy on common vulnerabilities. Su et al.~\cite{su2026detection} applied prompt engineering techniques including Chain-of-Thought and few-shot learning to augment LLM vulnerability detection. Bu et al.~\cite{bu2026dapp} fine-tuned Llama3-8B and Qwen2-7B for DApp vulnerability detection, achieving F1-scores of 0.83 with full-parameter fine-tuning.
+
+However, these works focus on using LLMs to \emph{audit} smart contracts rather than on holding LLM agents \emph{accountable} for their own DeFi decisions. A recent comprehensive survey on autonomous agents on blockchains~\cite{autonomous_agents_blockchain} explicitly identifies ``governance and policy enforcement mechanisms for constraining, auditing, and recovering from agent actions'' as a key open research problem for 2026, noting that ``questions about liability, accountability, and the enforceability of agent-executed contracts remain largely unresolved.''
+
+\subsection{Blockchain for AI Decision Provenance}
+
+Several works have explored blockchain as an audit infrastructure for AI systems. A framework for recording AI decisions in IoT using blockchain~\cite{ai_iot_blockchain} proposed logging model identifiers alongside decision hashes, creating an immutable record of which model version was responsible for each decision. The framework demonstrated that blockchain can serve as a robust audit log resilient to deletion or forgery.
+
+A methodological framework integrating blockchain mechanisms across the LLM pipeline using smart contracts, Merkle-based commitments, and decentralized verification was proposed in a recent review~\cite{blockchain_llm_review}, confirming the architectural viability of on-chain LLM accountability but noting the absence of concrete implementations with quantitative evaluation.
+
+DeVadoss~\cite{devadoss2026permissioned} proposed a three-part architecture for autonomous agents combining neurosymbolic planning, cognitive processing, and permissioned blockchain, providing a theoretical blueprint but without deployed smart contracts or gas cost analysis.
+
+\subsection{Merkle Trees for Data Integrity}
+
+Merkle trees~\cite{merkle1987} remain the foundational data structure for efficient data integrity verification in blockchain systems. ProvChain~\cite{provchain2017} established the paradigm of embedding provenance records into blockchain transactions for cloud data accountability. Subsequent works have applied Merkle-based verification to scientific data management, including blockchain-based environmental data management systems and dataset provenance tracking for research reproducibility.
+
+Our work differs from existing literature in three key aspects: (1) we target the specific accountability gap of LLM agents operating in DeFi, rather than general AI provenance or smart contract auditing; (2) we provide a deployed, verified smart contract with real on-chain transaction evidence; and (3) we present quantitative gas cost comparisons between individual and batch commitment strategies.
+
+
+%% ============================================================
+\section{System Architecture}
+\label{sec:architecture}
+
+ChainMind employs a four-layer architecture designed to bridge the gap between off-chain LLM inference and on-chain accountability. Figure~\ref{fig:architecture} illustrates the overall system design.
+
+\begin{figure}[h]
+\centering
+\fbox{\parbox{0.95\columnwidth}{
+\centering
+\textbf{ChainMind: Four-Layer Architecture}\\[6pt]
+\small
+\begin{tabular}{|c|p{5.8cm}|}
+\hline
+\textbf{Layer 4} & \textbf{Verification Layer} — $O(\log n)$ Merkle proof verification + tamper detection \\
+\hline
+\textbf{Layer 3} & \textbf{Blockchain Layer} — \texttt{AgentAccountability.sol} on Sepolia: \texttt{commitDecision()} / \texttt{submitBatch()} \\
+\hline
+\textbf{Layer 2} & \textbf{Commitment Layer} — SHA-256 hashing of inputs, outputs, model metadata + keccak256 Merkle tree construction \\
+\hline
+\textbf{Layer 1} & \textbf{Agent Layer} — Local LLM (Ollama qwen2.5:7b) analyzing 10 DeFi protocol scenarios \\
+\hline
+\end{tabular}
+}}
+\caption{ChainMind system architecture. Data flows upward from agent inference through cryptographic commitment to on-chain storage and verification.}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{Layer 1: Agent Layer}
+
+The Agent Layer simulates an LLM-powered DeFi agent that generates risk assessments and trading recommendations. We implement this using Ollama~\cite{ollama} running the Qwen2.5-7B-Instruct model locally, ensuring complete control over the inference environment.
+
+The agent operates across 10 diverse DeFi scenarios spanning major protocol categories: automated market makers (Uniswap V3), lending protocols (Aave V3, Compound V3, Morpho Blue), CDP platforms (MakerDAO), stablecoin exchanges (Curve Finance), liquid staking (Lido), perpetual exchanges (GMX), yield tokenization (Pendle Finance), and restaking (Eigenlayer). For each scenario, the agent receives structured market context including current prices, APY rates, risk metrics, and protocol-specific parameters, and produces a JSON-formatted risk assessment containing a risk level (LOW/MEDIUM/HIGH/CRITICAL), recommended action (EXECUTE/HOLD/REJECT), key risk factors, and confidence score.
+
+\subsection{Layer 2: Commitment Layer}
+
+The Commitment Layer transforms each agent decision into a set of cryptographic commitments suitable for on-chain storage. For each decision $d_i$, three SHA-256 hashes are computed:
+
+\begin{align}
+h_{\text{input}}^{(i)} &= \text{SHA-256}(\text{prompt}_i) \\
+h_{\text{output}}^{(i)} &= \text{SHA-256}(\text{response}_i) \\
+h_{\text{model}}^{(i)} &= \text{SHA-256}(\text{JSON}(\text{model\_id}, \text{version}))
+\end{align}
+
+These three hashes are then combined into a single leaf hash using Solidity-compatible keccak256:
+\begin{equation}
+\ell_i = \text{keccak256}(\text{abi.encodePacked}(h_{\text{input}}^{(i)}, h_{\text{output}}^{(i)}, h_{\text{model}}^{(i)}))
+\end{equation}
+
+For batch submission, the leaf hashes $\{\ell_1, \ell_2, \ldots, \ell_n\}$ are organized into a Merkle tree. Internal nodes are computed as:
+\begin{equation}
+\text{parent} = \text{keccak256}(\text{abi.encodePacked}(\text{left}, \text{right}))
+\end{equation}
+
+If the number of leaves at any level is odd, the last leaf is duplicated to ensure a complete binary tree. The resulting Merkle root $R$ serves as a constant-size commitment to the entire batch, regardless of the number of decisions.
+
+\subsection{Layer 3: Blockchain Layer}
+
+The Blockchain Layer consists of the \texttt{AgentAccountability} smart contract deployed on Ethereum Sepolia (address: \texttt{0xD134...a423}). The contract supports two commitment modes:
+
+\textbf{Individual Mode} (\texttt{commitDecision}): Stores all three hashes directly on-chain, providing immediate per-decision accountability at higher gas cost. This mode is suitable for high-stakes decisions requiring real-time auditability.
+
+\textbf{Batch Mode} (\texttt{submitBatch}): Stores only the Merkle root, batch size, and model identifier, reducing on-chain storage to a single 32-byte hash regardless of batch size. This mode is designed for high-frequency agents generating many decisions per epoch.
+
+\subsection{Layer 4: Verification Layer}
+
+The Verification Layer enables any party to verify that a specific decision was included in a previously committed batch. Given a decision's leaf hash $\ell_i$, a Merkle proof $\pi = \{s_1, s_2, \ldots, s_k\}$ (where $k = \lceil \log_2 n \rceil$), and the leaf's index, the on-chain \texttt{verifyDecision} function recomputes the root hash by iteratively combining the leaf with its siblings:
+
+\begin{equation}
+R' = f_k \circ f_{k-1} \circ \cdots \circ f_1(\ell_i)
+\end{equation}
+
+where each $f_j$ combines the current hash with proof element $s_j$ according to the index parity. The verification succeeds if and only if $R' = R$, the stored Merkle root. Any modification to the original decision---even a single byte---produces a different leaf hash, causing the recomputed root to diverge from the stored root with overwhelming probability ($1 - 2^{-256}$).
+
+
+%% ============================================================
+\section{Smart Contract Design}
+\label{sec:contract}
+
+\subsection{Contract Structure}
+
+The \texttt{AgentAccountability} contract manages two primary data structures:
+
+\begin{lstlisting}[caption={Core data structures},label={lst:structs}]
+struct DecisionCommitment {
+    bytes32 inputHash;
+    bytes32 outputHash;
+    bytes32 modelHash;
+    uint256 timestamp;
+    address agent;
+}
+
+struct MerkleBatch {
+    bytes32 merkleRoot;
+    uint256 batchSize;
+    uint256 timestamp;
+    address agent;
+    string  modelId;
+}
+\end{lstlisting}
+
+\subsection{Access Control}
+
+The contract implements a lightweight agent registry. Only the contract owner can register new agent addresses, and only registered agents can commit decisions or submit batches. This prevents unauthorized parties from polluting the accountability log while allowing multiple agents to share a single contract instance.
+
+\subsection{On-Chain Verification}
+
+The \texttt{verifyDecision} function implements Merkle proof verification entirely on-chain as a \texttt{view} function, consuming zero gas for external callers:
+
+\begin{lstlisting}[caption={On-chain Merkle proof verification},label={lst:verify}]
+function verifyDecision(
+    uint256 _batchId,
+    bytes32 _leafHash,
+    bytes32[] calldata _proof,
+    uint256 _index
+) external view returns (bool isValid) {
+    bytes32 computedHash = _leafHash;
+    for (uint256 i = 0; i < _proof.length; i++) {
+        if (_index % 2 == 0) {
+            computedHash = keccak256(
+                abi.encodePacked(computedHash, _proof[i]));
+        } else {
+            computedHash = keccak256(
+                abi.encodePacked(_proof[i], computedHash));
+        }
+        _index = _index / 2;
+    }
+    isValid = (computedHash == batches[_batchId].merkleRoot);
+}
+\end{lstlisting}
+
+\subsection{Gas Optimization Strategy}
+
+The contract employs several gas optimization techniques: (1) \texttt{calldata} parameter types for proof arrays to avoid memory copying; (2) \texttt{view} functions for verification to eliminate transaction costs; (3) batch submission reducing per-decision on-chain storage from 3$\times$32 bytes to an amortized fraction of a single 32-byte root; and (4) event emission for off-chain indexing, enabling lightweight clients to reconstruct the full decision history without reading contract storage.
+
+
+%% ============================================================
+\section{Experimental Evaluation}
+\label{sec:evaluation}
+
+We evaluate ChainMind along four dimensions: (1) Merkle tree construction and verification performance, (2) on-chain gas costs, (3) tamper detection capability, and (4) proof size efficiency.
+
+\subsection{Experimental Setup}
+
+All off-chain experiments were conducted on an Apple MacBook with M-series processor, Python 3.11, and the web3.py library. The smart contract was compiled with Solidity 0.8.31 (optimization: 200 runs) and deployed to Ethereum Sepolia testnet. The LLM component uses Ollama running Qwen2.5-7B-Instruct locally. The complete codebase is available at \url{https://github.com/liukefan821/ChainMind}.
+
+\subsection{Merkle Tree Performance}
+
+Table~\ref{tab:performance} reports construction and verification benchmarks across batch sizes ranging from 10 to 10,000 decisions.
+
+\begin{table}[h]
+\centering
+\caption{Merkle tree performance benchmarks}
+\label{tab:performance}
+\begin{tabular}{@{}rrrrc@{}}
+\toprule
+\textbf{Decisions} & \textbf{Build (ms)} & \textbf{Verify ($\mu$s)} & \textbf{Depth} & \textbf{Proof (B)} \\
+\midrule
+10     & 0.93   & 256   & 4  & 128  \\
+50     & 2.70   & 280   & 6  & 192  \\
+100    & 4.23   & 277   & 7  & 224  \\
+500    & 19.6   & 361   & 9  & 288  \\
+1,000  & 39.8   & 394   & 10 & 320  \\
+5,000  & 198    & 515   & 13 & 416  \\
+10,000 & 392    & 546   & 14 & 448  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Construction time scales linearly with batch size ($O(n)$), reaching 392~ms for 10,000 decisions. Verification time grows logarithmically ($O(\log n)$), remaining below 550~$\mu$s even for the largest batch. The proof size for any single decision is $32 \times \lceil \log_2 n \rceil$ bytes, reaching only 448 bytes for a batch of 10,000---compared to the 960,000 bytes that would be required for full data replay.
+
+\subsection{On-Chain Gas Cost Analysis}
+
+Table~\ref{tab:gas} summarizes the actual transaction costs recorded on Ethereum Sepolia.
+
+\begin{table}[h]
+\centering
+\caption{On-chain transaction costs (Sepolia testnet)}
+\label{tab:gas}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Operation} & \textbf{Txn Fee (ETH)} & \textbf{Decisions} \\
+\midrule
+commitDecision \#1   & 0.00024143 & 1  \\
+commitDecision \#2   & 0.00021578 & 1  \\
+commitDecision \#3   & 0.00021578 & 1  \\
+submitBatch          & 0.00024302 & 10 \\
+\midrule
+10$\times$ individual (projected) & 0.00218    & 10 \\
+1$\times$ batch (actual)          & 0.00024    & 10 \\
+\midrule
+\textbf{Cost reduction}           & \textbf{88.9\%} & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The batch submission cost (0.00024~ETH for 10 decisions) is comparable to a single individual commit, demonstrating that the Merkle approach reduces per-decision on-chain cost by nearly an order of magnitude. Critically, the batch submission cost remains constant regardless of batch size, as only a single 32-byte Merkle root is stored on-chain. For a batch of 1,000 decisions, the projected savings would exceed 99.9\%.
+
+\subsection{Tamper Detection}
+
+We validated tamper detection both off-chain and on-chain. In the off-chain test, modifying a single character in one agent response (appending ``[TAMPERED]'') produced a completely different leaf hash, causing Merkle proof verification to return \texttt{false}. In the on-chain test conducted via the deployed contract on Sepolia, we called \texttt{verifyDecision} with an original leaf hash and observed \texttt{isValid: true}, then modified only the last byte of the leaf hash (\texttt{0x...cdda} $\rightarrow$ \texttt{0x...cdff}) and observed \texttt{isValid: false}. Both tests confirm 100\% tamper detection: any modification to any field of any decision in the batch causes verification failure.
+
+\subsection{Proof Size Efficiency}
+
+The verification data required for a single decision is $32 \times \lceil \log_2 n \rceil$ bytes (the Merkle proof), compared to $96n$ bytes for full data replay (three 32-byte hashes per decision times $n$ decisions). At $n = 10{,}000$, the Merkle proof is 448 bytes versus 960,000 bytes for full replay---a 2,143$\times$ reduction. This sub-linear scaling makes ChainMind practical for high-frequency agents producing thousands of decisions per day.
+
+
+%% ============================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Regulatory Alignment}
+
+ChainMind's design aligns with emerging AI accountability regulations. The EU AI Act mandates logging of AI system operations for high-risk applications, including financial services. By anchoring decision commitments to a public blockchain, ChainMind provides regulators with an independently verifiable audit trail that cannot be retroactively modified by the agent operator. The non-repudiation property of blockchain ensures that once a Merkle root is submitted, the operator cannot deny the existence or content of any decision within that batch.
+
+\subsection{Comparison with Alternative Approaches}
+
+Table~\ref{tab:comparison} compares ChainMind with alternative accountability strategies.
+
+\begin{table}[h]
+\centering
+\caption{Comparison of accountability approaches}
+\label{tab:comparison}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Property} & \textbf{Off-chain} & \textbf{Per-decision} & \textbf{ChainMind} \\
+ & \textbf{logging} & \textbf{on-chain} & \textbf{(Merkle batch)} \\
+\midrule
+Tamper-evident      & No  & Yes & Yes \\
+Non-repudiation     & No  & Yes & Yes \\
+Constant batch cost & N/A & No  & Yes \\
+$O(\log n)$ verify  & N/A & N/A & Yes \\
+Gas-efficient       & N/A & No  & Yes \\
+Public verifiability & No & Yes & Yes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Off-chain logging (e.g., centralized databases) offers no tamper resistance. Per-decision on-chain recording provides strong guarantees but at prohibitive cost. ChainMind achieves the security properties of on-chain recording with the cost profile of off-chain logging.
+
+\subsection{Limitations and Future Work}
+
+Several limitations warrant discussion. First, our evaluation uses a testnet deployment; mainnet deployment would incur real financial costs, though the relative savings of batch submission would be preserved. Second, the current implementation stores decision data off-chain, requiring a trusted off-chain storage solution (e.g., IPFS) for complete reproducibility. Third, the framework does not address the correctness of LLM decisions themselves---it ensures accountability, not accuracy.
+
+Future work includes: (1) integration with IPFS or Arweave for decentralized off-chain storage of full decision records; (2) zero-knowledge proofs for privacy-preserving verification, enabling agents to prove decision inclusion without revealing decision content; (3) cross-chain deployment for multi-chain DeFi agents; and (4) real-time monitoring dashboards for regulatory compliance.
+
+
+%% ============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper presented ChainMind, a blockchain-based accountability framework for LLM-powered DeFi agents. By combining SHA-256 hashing, Merkle tree batch commitment, and on-chain smart contract verification, ChainMind addresses the critical gap between autonomous AI decision-making and verifiable accountability in decentralized finance. Our experimental evaluation on Ethereum Sepolia demonstrates that the Merkle batch approach reduces on-chain costs by 88.9\% compared to individual commits while maintaining $O(\log n)$ verification efficiency and 100\% tamper detection accuracy. The deployed and verified smart contract, along with the complete open-source codebase, enables independent reproduction of all reported results. As LLM-powered agents become increasingly prevalent in DeFi, frameworks like ChainMind will be essential for building the trust infrastructure that bridges autonomous AI capabilities with the accountability requirements of financial systems.
+
+%% ============================================================
+%% References
+\bibliographystyle{ACM-Reference-Format}
+
+\begin{thebibliography}{15}
+
+\bibitem{autonomous_agents_blockchain}
+Multiple authors.
+\newblock Autonomous Agents on Blockchains: Standards, Execution Models, and Trust Boundaries.
+\newblock \emph{arXiv preprint arXiv:2601.04583}, January 2026.
+
+\bibitem{llm_smartaudit}
+Z.~Wei, J.~Sun, Y.~Sun, Y.~Liu, D.~Wu, Z.~Zhang, X.~Zhang, M.~Li, Y.~Liu, C.~Li, M.~Wan, J.~Dong, and L.~Zhu.
+\newblock Advanced Smart Contract Vulnerability Detection via LLM-Powered Multi-Agent Systems.
+\newblock \emph{IEEE Transactions on Software Engineering}, 51(10):2830--2846, 2025.
+
+\bibitem{su2026detection}
+I.~Su, S.~Wang, Y.~Chung, and Y.~Tsai.
+\newblock A Smart Contract Vulnerability Detection Manner Based on Large Language Model.
+\newblock In \emph{Proc. ICKII 2024}, LNEE vol.~1481, Springer, 2026.
+
+\bibitem{bu2026dapp}
+J.~Bu, W.~Li, Z.~Li, Z.~Zhang, and X.~Li.
+\newblock Enhancing Smart Contract Vulnerability Detection in DApps Leveraging Fine-Tuned LLM.
+\newblock \emph{arXiv preprint arXiv:2504.05006}, 2025 (revised January 2026).
+
+\bibitem{ai_iot_blockchain}
+Multiple authors.
+\newblock Using Blockchain Ledgers to Record AI Decisions in IoT.
+\newblock \emph{MDPI Blockchains}, 6(3):37, July 2025.
+
+\bibitem{blockchain_llm_review}
+Multiple authors.
+\newblock Blockchain for Large Language Models (LLMs): Applications, Challenges, and Framework Implementation.
+\newblock \emph{Expert Systems with Applications}, January 2026.
+
+\bibitem{devadoss2026permissioned}
+J.~DeVadoss.
+\newblock A Permissioned Blockchain Approach for Autonomous Intelligent Agents.
+\newblock \emph{SSRN preprint 5930083}, January 2026.
+
+\bibitem{merkle1987}
+R.~C.~Merkle.
+\newblock A Digital Signature Based on a Conventional Encryption Function.
+\newblock In \emph{CRYPTO '87}, LNCS vol.~293, pp.~369--378, Springer, 1987.
+
+\bibitem{provchain2017}
+X.~Liang, S.~Shetty, D.~Tosh, C.~Kamhoua, K.~Kwiat, and L.~Njilla.
+\newblock ProvChain: A Blockchain-Based Data Provenance Architecture in Cloud Environment with Enhanced Privacy and Availability.
+\newblock In \emph{Proc. IEEE/ACM CCGrid}, pp.~468--477, 2017.
+
+\bibitem{ollama}
+Ollama.
+\newblock Ollama: Run Large Language Models Locally.
+\newblock \url{https://ollama.com}, 2024.
+
+\bibitem{napoli2026light}
+E.~A.~Napoli, N.~Romani, V.~Gatteschi, and C.~Schifanella.
+\newblock Light and Shadows of Smart Contract Development with LLMs.
+\newblock \emph{Expert Systems with Applications}, 296(B):129011, January 2026.
+
+\bibitem{contracttinker2024}
+W.~Liu, Y.~Liu, and others.
+\newblock ContractTinker: LLM-Empowered Vulnerability Repair for Real-World Smart Contracts.
+\newblock In \emph{Proc. ASE '24}, ACM, 2024.
+
+\bibitem{forge2026}
+Multiple authors.
+\newblock Forge: An LLM-driven Framework for Large-Scale Smart Contract Vulnerability Dataset Construction.
+\newblock In \emph{Proc. ICSE '26}, ACM, April 2026.
+
+\bibitem{iaudit2025}
+Multiple authors.
+\newblock Combining Fine-tuning and LLM-based Agents for Intuitive Smart Contract Auditing with Justifications.
+\newblock \emph{arXiv preprint arXiv:2403.16073v3}, September 2025.
+
+\bibitem{llmbugscanner2025}
+Georgia Tech researchers.
+\newblock LLMBugScanner: LLM-based Smart Contract Auditing with Ensemble Voting.
+\newblock Reported in \emph{Help Net Security}, December 2025.
+
+\end{thebibliography}
+
+\end{document}
