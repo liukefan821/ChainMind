@@ -1,67 +1,125 @@
-# ChainMind
+# BatteryTwin Benchmark — Part 1 分工说明
 
-**Blockchain-Based Accountability Framework for LLM-Powered DeFi Agents**
+> v1.0 · 2026-04 · Kefan + Cao Han
 
-Submitted to [Nanyang Blockchain Conference 2026 (NBC'26)](https://www.ntu.edu.sg/cctf/cctf-community/2026-nanyang-blockchain-conference), NTU Singapore.
+---
 
-## Overview
+## 分工总览
 
-ChainMind provides an on-chain accountability layer for LLM-powered DeFi agents. It records cryptographic commitments of agent decisions (input, output, and model metadata hashes) using Merkle trees for gas-efficient batch submission, with O(log n) single-decision verification.
+| 模块 | 负责人 | 文件 |
+|------|--------|------|
+| 数据划分 | **Kefan** | `benchmarks/data/data_split.py` |
+| 泄漏检测 | **Kefan** | `benchmarks/data/check_leakage.py` |
+| 数据接口契约 | **Kefan** | `benchmarks/data/dataset_interface.py` |
+| 评估流水线 | **Kefan** | `benchmarks/evaluate/evaluate.py` |
+| 结果汇总 | **Kefan** | `benchmarks/evaluate/aggregate_results.py` |
+| 5类模型实现 | **Cao Han** | `benchmarks/models/*.py` |
+| 统一训练入口 | **Cao Han** | `benchmarks/train.py` |
+| 超参配置文件 | **Cao Han** | `benchmarks/configs/*.yaml` |
 
-## Architecture
+---
 
-| Layer | Component | Description |
-|-------|-----------|-------------|
-| Agent | Ollama (qwen2.5:7b) | Local LLM generating DeFi risk assessments |
-| Commitment | SHA-256 + Merkle Tree | Cryptographic hashing and batch commitment |
-| Blockchain | AgentAccountability.sol | Sepolia smart contract for on-chain storage |
-| Verification | Merkle Proof | O(log n) per-decision tamper detection |
+## 快速开始
 
-## Smart Contract
+### Step 1 — 数据划分（Kefan 完成后提交，Cao Han 直接用）
 
-- **Address**: [`0xD134842c3a255C7f70873EAD16A26BB4f728a423`](https://sepolia.etherscan.io/address/0xD134842c3a255C7f70873EAD16A26BB4f728a423)
-- **Network**: Ethereum Sepolia Testnet
-- **Verified**: Sourcify / Blockscout / Routescan
-
-## Reproduce
 ```bash
-# 1. Setup
-conda create -n chainmind python=3.11 -y
-conda activate chainmind
-pip install -r requirements.txt
+cd benchmarks/data
 
-# 2. Run pipeline (mock mode, no LLM needed)
-cd scripts
-python pipeline.py --mock -n 10
+# 普通划分
+python data_split.py --data_root ../../data --output split_config.json
 
-# 3. Run pipeline (with local LLM)
-ollama serve          # in another terminal
-ollama pull qwen2.5:7b
-python pipeline.py -n 10
+# 对多温度数据集启用分层划分（XJTU / NTU EEE）
+python data_split.py --data_root ../../data --output split_config.json --stratify_by_temp
 
-# 4. Performance benchmarks
-python merkle_tree.py
+# 验证无时序泄漏
+python check_leakage.py --config split_config.json --data_root ../../data
 ```
 
-## Project Structure
-```
-ChainMind/
-├── contracts/
-│   └── AgentAccountability.sol   # Solidity smart contract
-├── scripts/
-│   ├── merkle_tree.py            # Merkle tree + benchmarks
-│   ├── agent_simulator.py        # LLM agent simulator (10 DeFi scenarios)
-│   └── pipeline.py               # End-to-end pipeline
-├── docs/
-│   └── deployment_info.txt       # On-chain deployment records
-├── requirements.txt
-└── README.md
+### Step 2 — 模型训练（Cao Han 负责）
+
+```bash
+# 示例：训练 LSTM 做 SOH 预测
+python benchmarks/train.py --model lstm --task soh --config benchmarks/configs/lstm_soh.yaml
+
+# 模型需继承 dataset_interface.py 中的 BaseModel
+# 使用 BatteryDataset / make_dataloader 加载数据（by split_config.json）
 ```
 
-## Author
+### Step 3 — 评估（任一人均可运行）
 
-**Kefan Liu** — MSc Blockchain Technology, Nanyang Technological University (NTU), Singapore
+```bash
+# 单次评估
+python benchmarks/evaluate/evaluate.py \
+    --model benchmarks/results/lstm_soh_best.pt \
+    --dataset ../../data/dataset_02_CALCE \
+    --task soh \
+    --split_config benchmarks/data/split_config.json
 
-## License
+# 多次运行取均值（推荐）
+python benchmarks/evaluate/evaluate.py ... --n_runs 3
 
-MIT
+# 多温度分组（A2 实验）
+python benchmarks/evaluate/evaluate.py ... --group_by_temp
+```
+
+### Step 4 — 汇总所有结果（集成阶段）
+
+```bash
+python benchmarks/evaluate/aggregate_results.py \
+    --results_dir benchmarks/results/ \
+    --output summary_table.csv \
+    --output_rul summary_table_rul.csv
+```
+
+---
+
+## 目录结构
+
+```
+benchmarks/
+├── data/
+│   ├── data_split.py          # Kefan
+│   ├── check_leakage.py       # Kefan
+│   ├── dataset_interface.py   # Kefan（接口契约）
+│   └── split_config.json      # 自动生成，提交到 git
+├── models/
+│   ├── mlp.py                 # Cao Han
+│   ├── cnn.py                 # Cao Han
+│   ├── lstm.py                # Cao Han
+│   ├── transformer.py         # Cao Han
+│   └── pinn.py                # Cao Han
+├── configs/
+│   ├── cnn_soh.yaml           # Cao Han
+│   ├── lstm_rul.yaml          # Cao Han
+│   └── ...
+├── evaluate/
+│   ├── evaluate.py            # Kefan
+│   └── aggregate_results.py   # Kefan
+├── results/                   # 自动生成，存放 JSON 结果
+│   └── *.json
+└── train.py                   # Cao Han
+```
+
+---
+
+## 接口约定（关键！）
+
+Cao Han 的所有模型必须：
+
+1. **继承 `BaseModel`**（来自 `benchmarks/data/dataset_interface.py`）
+2. **实现 `predict(x: np.ndarray) -> np.ndarray`**，x shape = `[N, T, F]`
+3. **保存为 `.pt` 或 `.pkl`**，路径放在 `benchmarks/results/`
+4. 模型文件名包含模型类型，如 `lstm_soh_best.pt`、`cnn_rul_best.pt`
+
+Kefan 的 `evaluate.py` 和 `aggregate_results.py` 会自动根据文件名识别模型类型。
+
+---
+
+## 环境依赖
+
+```bash
+conda activate batterytwin
+pip install pandas numpy scikit-learn pyarrow
+# 模型侧还需要: pip install torch
+```
