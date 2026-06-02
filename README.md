@@ -1,125 +1,151 @@
-# BatteryTwin Benchmark — Part 1 分工说明
+# ChainMind
 
-> v1.0 · 2026-04 · Kefan + Cao Han
+**A blockchain-based accountability framework for LLM-powered DeFi agents.**
 
----
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Solidity](https://img.shields.io/badge/Solidity-0.8.31-363636.svg)](./contracts/AgentAccountability.sol)
+[![Network](https://img.shields.io/badge/Network-Sepolia-7b3fe4.svg)](https://sepolia.etherscan.io/address/0xD134842c3a255C7f70873EAD16A26BB4f728a423)
+[![Paper](https://img.shields.io/badge/Paper-NBC'26-brightgreen.svg)](./paper/ChainMind_NBC26.pdf)
 
-## 分工总览
-
-| 模块 | 负责人 | 文件 |
-|------|--------|------|
-| 数据划分 | **Kefan** | `benchmarks/data/data_split.py` |
-| 泄漏检测 | **Kefan** | `benchmarks/data/check_leakage.py` |
-| 数据接口契约 | **Kefan** | `benchmarks/data/dataset_interface.py` |
-| 评估流水线 | **Kefan** | `benchmarks/evaluate/evaluate.py` |
-| 结果汇总 | **Kefan** | `benchmarks/evaluate/aggregate_results.py` |
-| 5类模型实现 | **Cao Han** | `benchmarks/models/*.py` |
-| 统一训练入口 | **Cao Han** | `benchmarks/train.py` |
-| 超参配置文件 | **Cao Han** | `benchmarks/configs/*.yaml` |
+> Author: **Kefan Liu** · 2026 · Submitted to NBC'26
 
 ---
 
-## 快速开始
+## Overview
 
-### Step 1 — 数据划分（Kefan 完成后提交，Cao Han 直接用）
+As Large Language Models are integrated into Decentralized Finance, autonomous agents now execute trades, assess risk, and manage portfolios with little human oversight. Because LLM reasoning is opaque and ephemeral, there is no tamper-evident record of *what inputs a model received, what output it produced, or which model version was responsible* for a given decision. ChainMind closes this accountability gap by recording cryptographic commitments of agent decisions on Ethereum, so that any individual decision can later be verified against an immutable on-chain root.
+
+The central design insight is that **Merkle trees allow arbitrarily many decisions to be committed in a single on-chain transaction**, cutting cost by 88.9% relative to per-decision commits while still permitting verification of any single decision with `O(log n)` proof complexity.
+
+## Key results
+
+| Metric | Result |
+|--------|--------|
+| On-chain cost reduction (Merkle batch vs. individual commits) | **88.9%** |
+| Batch submission cost | Constant, independent of batch size |
+| Single-decision verification (batch of 10,000) | **546 µs** |
+| Tamper detection accuracy | **100%** (a single-byte change fails verification) |
+| Proof complexity | `O(log n)` |
+
+All figures are reproducible from the public codebase; results in the paper were measured on Ethereum Sepolia.
+
+## Architecture
+
+ChainMind uses a four-layer design:
+
+1. **Agent Layer** — a local LLM (Ollama, `qwen2.5:7b`) generates DeFi risk assessments across 10 protocol scenarios.
+2. **Commitment Layer** — each decision is reduced to SHA-256 commitments over its inputs, outputs, and model metadata (model ID and version).
+3. **Blockchain Layer** — the `AgentAccountability` smart contract stores commitments, supporting both individual decisions and Merkle-tree batch submissions.
+4. **Verification Layer** — any single decision is verified on-chain via a Merkle proof in `O(log n)` time.
+
+Leaf hashing uses SHA-256; internal nodes use `keccak256(abi.encodePacked(left, right))` to match Solidity's hashing exactly, so off-chain proofs verify against the on-chain contract without re-hashing mismatches.
+
+## Repository structure
+
+```
+ChainMind/
+├── contracts/
+│   └── AgentAccountability.sol      # On-chain commitment + Merkle verification
+├── scripts/
+│   ├── agent_simulator.py           # LLM decision generation (Ollama / mock)
+│   ├── merkle_tree.py               # MerkleTree, DecisionRecord, proof generation
+│   ├── pipeline.py                  # End-to-end pipeline (generate → commit → verify)
+│   ├── benchmark_extended.py        # Extended benchmarks
+│   ├── generate_figures.py          # Reproduce paper figures
+│   └── prepare_remix_params.py      # Helper for Remix deployment params
+├── benchmark_large_scale.py         # Large-scale (up to 10k decisions) benchmark
+├── paper/
+│   ├── ChainMind_NBC26.pdf / .tex   # NBC'26 submission
+│   └── figures/                     # fig1_architecture … fig6_tamper_detection
+├── docs/
+│   ├── deployment_info.txt          # Contract address, TX, verification status
+│   ├── ChainMind_Handoff.md
+│   └── ...                          # Remix / Overleaf tutorials
+├── requirements.txt
+└── LICENSE
+```
+
+## Smart contract
+
+| Field | Value |
+|-------|-------|
+| Contract | `AgentAccountability` |
+| Address | `0xD134842c3a255C7f70873EAD16A26BB4f728a423` |
+| Network | Ethereum Sepolia |
+| Deploy TX | `0x6f133ed9323d9fb0f684b054b0d8813f8a61ac49f5c533218968217711b3878d` |
+| Compiler | Solidity 0.8.31 |
+| Verified | Sourcify · Blockscout · Routescan |
+
+Explorer: https://sepolia.etherscan.io/address/0xD134842c3a255C7f70873EAD16A26BB4f728a423
+
+Core interface: `registerAgent`, `commitDecision` (individual), `submitBatch` (Merkle root), `verifyDecision` / `verifyIndividualDecision` (on-chain proof check), plus `getDecision` / `getBatch` views.
+
+## Quick start
+
+### 1. Install dependencies
 
 ```bash
-cd benchmarks/data
-
-# 普通划分
-python data_split.py --data_root ../../data --output split_config.json
-
-# 对多温度数据集启用分层划分（XJTU / NTU EEE）
-python data_split.py --data_root ../../data --output split_config.json --stratify_by_temp
-
-# 验证无时序泄漏
-python check_leakage.py --config split_config.json --data_root ../../data
+pip install -r requirements.txt
 ```
 
-### Step 2 — 模型训练（Cao Han 负责）
+Key dependencies: `web3>=7.0.0`, `eth-abi>=5.0.0`, `matplotlib`, `pandas`.
+
+### 2. (Optional) Start the local LLM
+
+The Agent Layer uses Ollama. To generate real decisions:
 
 ```bash
-# 示例：训练 LSTM 做 SOH 预测
-python benchmarks/train.py --model lstm --task soh --config benchmarks/configs/lstm_soh.yaml
-
-# 模型需继承 dataset_interface.py 中的 BaseModel
-# 使用 BatteryDataset / make_dataloader 加载数据（by split_config.json）
+ollama serve
+ollama pull qwen2.5:7b
 ```
 
-### Step 3 — 评估（任一人均可运行）
+If Ollama is unavailable, run the pipeline in mock mode (next step).
+
+### 3. Run the end-to-end pipeline
 
 ```bash
-# 单次评估
-python benchmarks/evaluate/evaluate.py \
-    --model benchmarks/results/lstm_soh_best.pt \
-    --dataset ../../data/dataset_02_CALCE \
-    --task soh \
-    --split_config benchmarks/data/split_config.json
+cd scripts
 
-# 多次运行取均值（推荐）
-python benchmarks/evaluate/evaluate.py ... --n_runs 3
+# Generate 10 decisions with the local LLM, build the Merkle tree, generate proofs
+python pipeline.py -n 10
 
-# 多温度分组（A2 实验）
-python benchmarks/evaluate/evaluate.py ... --group_by_temp
+# Mock mode — skip Ollama, use synthetic decisions
+python pipeline.py -n 10 --mock
+
+# Custom output directory
+python pipeline.py -n 100 --mock -o data
 ```
 
-### Step 4 — 汇总所有结果（集成阶段）
+The pipeline generates agent decisions, builds a Merkle tree from the decision hashes, generates a proof for every leaf, and verifies them locally before on-chain submission.
+
+### 4. Reproduce the benchmarks and figures
 
 ```bash
-python benchmarks/evaluate/aggregate_results.py \
-    --results_dir benchmarks/results/ \
-    --output summary_table.csv \
-    --output_rul summary_table_rul.csv
+# Large-scale cost / verification-time benchmark
+python benchmark_large_scale.py
+
+# Extended benchmarks
+python scripts/benchmark_extended.py
+
+# Regenerate paper figures
+python scripts/generate_figures.py
 ```
 
----
+## Reproducibility
 
-## 目录结构
+The paper's experimental claims — 88.9% cost reduction, constant-cost batch submission, sub-millisecond verification at scale, and 100% tamper detection — are reproducible via the scripts above. The deployed contract is publicly verified (see `docs/deployment_info.txt`), so on-chain results can be independently confirmed against the live Sepolia deployment.
 
-```
-benchmarks/
-├── data/
-│   ├── data_split.py          # Kefan
-│   ├── check_leakage.py       # Kefan
-│   ├── dataset_interface.py   # Kefan（接口契约）
-│   └── split_config.json      # 自动生成，提交到 git
-├── models/
-│   ├── mlp.py                 # Cao Han
-│   ├── cnn.py                 # Cao Han
-│   ├── lstm.py                # Cao Han
-│   ├── transformer.py         # Cao Han
-│   └── pinn.py                # Cao Han
-├── configs/
-│   ├── cnn_soh.yaml           # Cao Han
-│   ├── lstm_rul.yaml          # Cao Han
-│   └── ...
-├── evaluate/
-│   ├── evaluate.py            # Kefan
-│   └── aggregate_results.py   # Kefan
-├── results/                   # 自动生成，存放 JSON 结果
-│   └── *.json
-└── train.py                   # Cao Han
+## Citation
+
+```bibtex
+@inproceedings{liu2026chainmind,
+  title     = {ChainMind: A Blockchain-Based Accountability Framework for LLM-Powered DeFi Agents},
+  author    = {Liu, Kefan},
+  booktitle = {Proceedings of NBC'26},
+  year      = {2026}
+}
 ```
 
----
+## License
 
-## 接口约定（关键！）
-
-Cao Han 的所有模型必须：
-
-1. **继承 `BaseModel`**（来自 `benchmarks/data/dataset_interface.py`）
-2. **实现 `predict(x: np.ndarray) -> np.ndarray`**，x shape = `[N, T, F]`
-3. **保存为 `.pt` 或 `.pkl`**，路径放在 `benchmarks/results/`
-4. 模型文件名包含模型类型，如 `lstm_soh_best.pt`、`cnn_rul_best.pt`
-
-Kefan 的 `evaluate.py` 和 `aggregate_results.py` 会自动根据文件名识别模型类型。
-
----
-
-## 环境依赖
-
-```bash
-conda activate batterytwin
-pip install pandas numpy scikit-learn pyarrow
-# 模型侧还需要: pip install torch
-```
+Released under the [MIT License](./LICENSE). © 2026 Kefan Liu.
