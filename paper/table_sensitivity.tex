@@ -1,0 +1,23 @@
+\begin{table}[t]
+\centering
+\caption{Sensitivity of mainnet accountability cost to gas and ETH price.
+Batch cost uses 93,000~gas (\texttt{submitBatch}); per-decision
+columns assume 1,000~decisions per batch. The savings of
+Merkle batching over per-decision commits is \emph{invariant} to price (both scale
+linearly), staying at $99.9\%$ across the entire range; only the absolute cost varies.}
+\label{tab:cost_sensitivity}
+\small
+\begin{tabular}{rrrrrr}
+\toprule
+\textbf{Gas} & \textbf{ETH} & \textbf{Batch} & \textbf{Batch} & \textbf{Indiv.} & \textbf{Savings} \\
+\textbf{(Gwei)} & \textbf{(USD)} & \textbf{/tx (\$)} & \textbf{/dec.\ (\$)} & \textbf{/dec.\ (\$)} & \textbf{(\%)} \\
+\midrule
+10 & 2,500 & 2.33 & 0.00233 & 2.09 & 99.89 \\
+20 & 2,500 & 4.65 & 0.00465 & 4.17 & 99.89 \\
+30 & 3,500 & 9.77 & 0.00977 & 8.77 & 99.89 \\
+50 & 4,000 & 18.60 & 0.01860 & 16.70 & 99.89 \\
+100 & 5,000 & 46.50 & 0.04650 & 41.75 & 99.89 \\
+150 & 5,000 & 69.75 & 0.06975 & 62.63 & 99.89 \\
+\bottomrule
+\end{tabular}
+\end{table}
